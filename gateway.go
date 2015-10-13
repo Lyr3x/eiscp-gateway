@@ -47,7 +47,7 @@ func main() {
 	// Command line options
 	flag.BoolVar(&debug, "debug", false, "enable verbose debugging")
 	flag.BoolVar(&statsEnabled, "stats", false, "enable stats collecting")
-	flag.StringVar(&defaultDevice, "device", "127.0.0.1", "IP address of device to connect to")
+	flag.StringVar(&defaultDevice, "device", "192.168.2.143", "IP address of device to connect to")
 	flag.IntVar(&devicePort, "port", 60128, "port on device to commmunicate with")
 	flag.IntVar(&defaultPort, "serve", 3000, "port to host REST API on")
 	flag.StringVar(&statsdAddress, "statsd", "localhost:8125", "IP and Port of Statsd server")
