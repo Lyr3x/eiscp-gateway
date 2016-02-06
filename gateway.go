@@ -26,9 +26,12 @@ var devicePort int
 var defaultPort int
 var pollingRate int
 var statsdAddress string
+var statsdPrefix string
 
 // Global socket
 var globalSocket *net.TCPConn
+var lastMessage int64
+var hesDeadJim bool
 
 // Disconnection flag to end read loop
 var disconnectFlag bool
@@ -51,6 +54,7 @@ func main() {
 	flag.IntVar(&devicePort, "port", 60128, "port on device to commmunicate with")
 	flag.IntVar(&defaultPort, "serve", 3000, "port to host REST API on")
 	flag.StringVar(&statsdAddress, "statsd", "localhost:8125", "IP and Port of Statsd server")
+	flag.StringVar(&statsdPrefix, "prefix", "eiscp", "A prefix prepended to all stats")
 
 	// Now that we've defined our flags, parse them
 	flag.Parse()
@@ -60,8 +64,7 @@ func main() {
 	}
 
 	// init
-  prefix := "eiscp-gateway."
-  statsdclient := statsd.NewStatsdClient(statsdAddress, prefix)
+  statsdclient := statsd.NewStatsdClient(statsdAddress, statsdPrefix)
   if statsEnabled {
   	if debug {
 		fmt.Println("Attempting connection to statsd")
@@ -74,8 +77,12 @@ func main() {
 
 	fmt.Println("Searching for device on port", devicePort, "at", defaultDevice)
 
-	// Attempt to connect to default device
-	go connectDevice()
+	// Do our device stuff here
+	go func() {
+		for true {
+	    deviceLoop()
+	  }
+  }()
 
 	r := mux.NewRouter()
 	r.HandleFunc("/kill", HandleKill) //Debug Function
@@ -90,16 +97,40 @@ func main() {
 	http.ListenAndServe(":" + strconv.Itoa(defaultPort), nil)
 }
 
-func connectDevice() {
+func openConnection() (bool, *net.TCPConn) {
 	deviceSocket, err := net.DialTCP("tcp4", nil, &net.TCPAddr{
 		IP:   net.ParseIP(defaultDevice),
 		Port: devicePort,
 	})
-
-	// Check for error
 	if err != nil {
 		fmt.Println("Error connecting to device", defaultDevice)
-		fmt.Println(err)
+		if debug {
+			fmt.Println(time.Now().Format(time.StampMilli), "DEBUG: Detailed error message:", err)
+		}
+		return false, nil
+	}
+	return true, deviceSocket
+}
+
+func stillAlive() {
+	time.Sleep(time.Second * 5)
+	if (time.Now().Unix() - lastMessage) > 6 {
+		if debug {
+			fmt.Println(time.Now().Format(time.StampMilli), "DEBUG: Last message was more than 6 seconds ago")
+		}
+		hesDeadJim = true
+	}
+}
+
+func deviceLoop() {
+	var deviceSocket *net.TCPConn
+	success := false
+	for !success {
+		success, deviceSocket = openConnection()
+		if !success {
+			fmt.Println("Connection failed, waiting and trying again")
+			time.Sleep(time.Second)
+		}
 	}
 
 	// We seem to have succeeded. Continue.
@@ -107,27 +138,60 @@ func connectDevice() {
 
 	for !disconnectFlag {
 		data := make([]byte, 1024)
-		deviceSocket.SetReadDeadline(time.Now().Add(time.Millisecond * 51))
+		deviceSocket.SetReadDeadline(time.Now().Add(time.Second * 10))
+		if debug {
+			fmt.Println(time.Now().Format(time.StampMilli), "DEBUG: Waiting for data")
+		}
 		read, err := deviceSocket.Read(data)
 		switch err := err.(type) {
 		case net.Error:
 			if err.Timeout() {
-				// Timeout error, we expect this.
+				if hesDeadJim {
+					// We checked stay alive on our last loop, and it appears we're dead
+					fmt.Println("Connection appears to be gone, closing.")
+					disconnectFlag = true
+					err := deviceSocket.Close()
+					if err != nil {
+						fmt.Println("Error closing socket")
+					}
+					hesDeadJim = false
+				}else{
+					// Check if our connection is timed out, or if the receiver is quiet
+					if debug {
+						fmt.Println(time.Now().Format(time.StampMilli), "DEBUG: KeepAlive Check")
+					}
+					go message("!1PWRQSTN")
+					go stillAlive()
+				}
 			} else {
-				// Unexpected net error
+				fmt.Println("Encountered unexpected error during main loop:", err)
 			}
 		default:
-			// No error?
-		}
-		packet, valid := processISCP(data[:read])
-		if valid {
-			packetType := packet[2:5]
-			packetData := packet[5:]
-			properties[packetType] = packetData
+			// No error? Update when we got our last message
+			lastMessage = time.Now().Unix()
 			if debug {
-				fmt.Println(time.Now().Format(time.StampMilli), "DEBUG: Packet:", packet, "received")
+				fmt.Println(time.Now().Format(time.StampMilli), "DEBUG: Message received succesfully")
 			}
-			recvCount++
+
+			packet, valid := processISCP(data[:read])
+			if valid {
+				packetType := packet[2:5]
+				packetData := packet[5:]
+				properties[packetType] = packetData
+				if debug {
+					fmt.Println(time.Now().Format(time.StampMilli), "DEBUG: Packet:", packet, "received")
+				}
+				recvCount++
+				if statsEnabled {
+					postInt, err := strconv.ParseInt(packetData, 16, 0)
+					if err == nil {
+						stats.Gauge(".update." + packetType, postInt)
+						if debug {
+							fmt.Println(time.Now().Format(time.StampMilli), "DEBUG: Sending stat update", packetType, postInt)
+						}
+					}
+				}
+			}
 		}
 	}
 	disconnectFlag = false
