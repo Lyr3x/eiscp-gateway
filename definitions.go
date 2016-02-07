@@ -90,4 +90,7 @@ var valueDictionary map[valueDefKey]valueDefinition = map[valueDefKey]valueDefin
 	valueDefKey{propertiesDictionary["SLI"], "2C"}: valueDefinition{
 		description: "USB(Toggle)",
 	},
+	valueDefKey{propertiesDictionary["SLI"], "36"}: valueDefinition{
+		description: "Bluetooth",
+	},
 }
